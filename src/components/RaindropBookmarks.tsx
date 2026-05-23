@@ -6,6 +6,7 @@ import {
 	List,
 	showToast,
 	Toast,
+	useNavigation,
 } from "@vicinae/api";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -47,11 +48,11 @@ export default function RaindropBookmarks({
 	initialCollectionId = ALL_BOOKMARKS_COLLECTION_ID.toString(),
 }: RaindropBookmarksProps = {}) {
 	const { apiToken } = getPreferenceValues<Preferences>();
+	const { push } = useNavigation();
 	const [raindrops, setRaindrops] = useState<Raindrop[]>([]);
 	const [rootCollections, setRootCollections] = useState<Collection[]>([]);
 	const [childCollections, setChildCollections] = useState<Collection[]>([]);
-	const [selectedCollectionId, setSelectedCollectionId] =
-		useState(initialCollectionId);
+	const [selectedCollectionId] = useState(initialCollectionId);
 	const [searchText, setSearchText] = useState("");
 	const [isLoadingRaindrops, setIsLoadingRaindrops] = useState(true);
 	const [isLoadingCollections, setIsLoadingCollections] = useState(true);
@@ -218,10 +219,14 @@ export default function RaindropBookmarks({
 		).slice(0, MAX_COLLECTION_SUGGESTIONS);
 	}, [allCollections, searchText, selectedCollectionId]);
 
-	const handleCollectionDropdownChange = useCallback((collectionId: string) => {
-		setSelectedCollectionId(collectionId);
-		setSearchText("");
-	}, []);
+	const handleCollectionDropdownChange = useCallback(
+		(collectionId: string) => {
+			if (collectionId !== selectedCollectionId) {
+				push(<RaindropBookmarks initialCollectionId={collectionId} />);
+			}
+		},
+		[push, selectedCollectionId],
+	);
 
 	const renameBookmark = useCallback(
 		async (id: number, title: string) => {

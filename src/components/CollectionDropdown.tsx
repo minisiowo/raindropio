@@ -1,5 +1,10 @@
-import { List } from "@vicinae/api";
-import { BUILT_IN_COLLECTIONS } from "../constants";
+import { Icon, List } from "@vicinae/api";
+import {
+	ALL_BOOKMARKS_COLLECTION_ID,
+	BUILT_IN_COLLECTIONS,
+	TRASH_COLLECTION_ID,
+	UNSORTED_COLLECTION_ID,
+} from "../constants";
 import type { Collection } from "../types";
 import { getCollectionTitle } from "../utils/collections";
 
@@ -10,6 +15,19 @@ type CollectionDropdownProps = {
 	childCollectionTitles: Collection[];
 	onChange: (collectionId: string) => void;
 };
+
+function getBuiltInCollectionIcon(id: number) {
+	switch (id) {
+		case ALL_BOOKMARKS_COLLECTION_ID:
+			return Icon.Globe;
+		case UNSORTED_COLLECTION_ID:
+			return Icon.Tray;
+		case TRASH_COLLECTION_ID:
+			return Icon.Trash;
+		default:
+			return Icon.Bookmark;
+	}
+}
 
 export function CollectionDropdown({
 	selectedCollectionId,
@@ -31,6 +49,7 @@ export function CollectionDropdown({
 						key={collection._id}
 						title={collection.title}
 						value={collection._id.toString()}
+						icon={getBuiltInCollectionIcon(collection._id)}
 					/>
 				))}
 			</List.Dropdown.Section>
@@ -40,6 +59,7 @@ export function CollectionDropdown({
 						key={collection._id}
 						title={getCollectionTitle(collection)}
 						value={collection._id.toString()}
+						icon={Icon.Folder}
 					/>
 				))}
 			</List.Dropdown.Section>
@@ -49,6 +69,7 @@ export function CollectionDropdown({
 						key={collection._id}
 						title={getCollectionTitle(collection)}
 						value={collection._id.toString()}
+						icon={Icon.Folder}
 					/>
 				))}
 			</List.Dropdown.Section>
