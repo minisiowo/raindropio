@@ -1,4 +1,34 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Vicinae generated files
 vicinae-env.d.ts
 
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local agent/runtime scratch files
 progress.md
+
+# Build/cache output
+.cache/
+dist/
+build/
+coverage/
