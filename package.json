@@ -5,14 +5,14 @@
   "description": "Browse and search your Raindrop.io bookmarks from Vicinae.",
   "categories": [],
   "license": "MIT",
-  "author": "Minisiowo",
+  "author": "minisiowo",
   "contributors": [],
   "pastContributors": [],
   "icon": "extension_icon.png",
   "commands": [
     {
       "name": "raindrop",
-      "title": "Raindrop",
+      "title": "Search Raindrop",
       "subtitle": "Search your bookmarks",
       "description": "Search your Raindrop.io bookmarks.",
       "mode": "view"
