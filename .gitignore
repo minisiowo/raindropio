@@ -32,3 +32,6 @@ progress.md
 dist/
 build/
 coverage/
+
+# Local planning artifacts
+athena-plans/
