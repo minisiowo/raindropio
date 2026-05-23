@@ -47,6 +47,12 @@ export type MutationResponse = {
 	errorMessage?: string;
 };
 
+export type RaindropsQueryCacheEntry = {
+	items: Raindrop[];
+	count: number;
+	nextPage: number;
+};
+
 export type RaindropBookmarksProps = {
 	initialCollectionId?: string;
 };

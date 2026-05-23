@@ -8,16 +8,19 @@ import {
 	Toast,
 	useNavigation,
 } from "@vicinae/api";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	createRaindropRequest,
 	ensureMutationResult,
+	fetchRaindrops,
 	jsonRequestInit,
 } from "../api/raindrop-api";
 import {
 	ALL_BOOKMARKS_COLLECTION_ID,
 	BUILT_IN_COLLECTIONS,
 	MAX_COLLECTION_SUGGESTIONS,
+	RAINDROPS_PER_PAGE,
+	SERVER_SEARCH_DEBOUNCE_MS,
 	TRASH_COLLECTION_ID,
 } from "../constants";
 import type {
@@ -27,7 +30,7 @@ import type {
 	Preferences,
 	Raindrop,
 	RaindropBookmarksProps,
-	RaindropsResponse,
+	RaindropsQueryCacheEntry,
 } from "../types";
 import {
 	getCollectionMatchScore,
@@ -39,10 +42,17 @@ import {
 	uniqueCollections,
 } from "../utils/collections";
 import { getErrorMessage } from "../utils/errors";
-import { sortFavoriteFirst } from "../utils/raindrops";
+import { mergeRaindropsById, sortFavoriteFirst } from "../utils/raindrops";
 import { BookmarkListSection } from "./BookmarkListSection";
 import { CollectionDropdown } from "./CollectionDropdown";
 import { CollectionSuggestionsSection } from "./CollectionSuggestionsSection";
+
+const raindropsQueryCache = new Map<string, RaindropsQueryCacheEntry>();
+let raindropsQueryCacheToken: string | undefined;
+
+function getRaindropsQueryKey(collectionId: string, search: string) {
+	return `${collectionId}:${normalize(search)}`;
+}
 
 export default function RaindropBookmarks({
 	initialCollectionId = ALL_BOOKMARKS_COLLECTION_ID.toString(),
@@ -50,20 +60,53 @@ export default function RaindropBookmarks({
 	const { apiToken } = getPreferenceValues<Preferences>();
 	const { push } = useNavigation();
 	const [raindrops, setRaindrops] = useState<Raindrop[]>([]);
+	const [raindropsCount, setRaindropsCount] = useState(0);
+	const [nextPage, setNextPage] = useState(0);
 	const [rootCollections, setRootCollections] = useState<Collection[]>([]);
 	const [childCollections, setChildCollections] = useState<Collection[]>([]);
 	const [selectedCollectionId] = useState(initialCollectionId);
 	const [searchText, setSearchText] = useState("");
+	const [debouncedSearchText, setDebouncedSearchText] = useState("");
 	const [isLoadingRaindrops, setIsLoadingRaindrops] = useState(true);
+	const [isLoadingMore, setIsLoadingMore] = useState(false);
 	const [isLoadingCollections, setIsLoadingCollections] = useState(true);
 	const [error, setError] = useState<string>();
+	const [loadMoreError, setLoadMoreError] = useState<string>();
 	const [refreshToken, setRefreshToken] = useState(0);
+	const requestIdRef = useRef(0);
+	const activeQueryKeyRef = useRef("");
+
+	useEffect(() => {
+		if (raindropsQueryCacheToken === apiToken) return;
+
+		raindropsQueryCache.clear();
+		raindropsQueryCacheToken = apiToken;
+	}, [apiToken]);
 
 	const request = useMemo(() => createRaindropRequest(apiToken), [apiToken]);
+	const activeQueryKey = useMemo(
+		() => getRaindropsQueryKey(selectedCollectionId, debouncedSearchText),
+		[selectedCollectionId, debouncedSearchText],
+	);
+
+	const invalidateRaindropsQueryCache = useCallback(() => {
+		raindropsQueryCache.clear();
+		requestIdRef.current += 1;
+		setIsLoadingMore(false);
+	}, []);
 
 	const refresh = useCallback(() => {
+		invalidateRaindropsQueryCache();
 		setRefreshToken((current) => current + 1);
-	}, []);
+	}, [invalidateRaindropsQueryCache]);
+
+	useEffect(() => {
+		const timeout = setTimeout(() => {
+			setDebouncedSearchText(searchText.trim());
+		}, SERVER_SEARCH_DEBOUNCE_MS);
+
+		return () => clearTimeout(timeout);
+	}, [searchText]);
 
 	useEffect(() => {
 		void refreshToken;
@@ -119,16 +162,39 @@ export default function RaindropBookmarks({
 
 	useEffect(() => {
 		void refreshToken;
+		const requestId = requestIdRef.current + 1;
+		requestIdRef.current = requestId;
+		activeQueryKeyRef.current = activeQueryKey;
+		setIsLoadingMore(false);
+		setLoadMoreError(undefined);
+
+		const cachedQuery = raindropsQueryCache.get(activeQueryKey);
+		if (cachedQuery) {
+			setRaindrops(cachedQuery.items);
+			setRaindropsCount(cachedQuery.count);
+			setNextPage(cachedQuery.nextPage);
+			setError(undefined);
+			setIsLoadingMore(false);
+			setIsLoadingRaindrops(false);
+			return;
+		}
+
 		let isMounted = true;
 
 		async function loadRaindrops() {
 			setIsLoadingRaindrops(true);
 			setError(undefined);
+			setRaindrops([]);
+			setRaindropsCount(0);
+			setNextPage(0);
 
 			try {
-				const data = await request<RaindropsResponse>(
-					`/raindrops/${selectedCollectionId}?perpage=50&sort=-created&nested=true`,
-				);
+				const data = await fetchRaindrops(request, {
+					collectionId: selectedCollectionId,
+					page: 0,
+					perPage: RAINDROPS_PER_PAGE,
+					search: debouncedSearchText,
+				});
 
 				if (!data.result) {
 					throw new Error(
@@ -136,12 +202,23 @@ export default function RaindropBookmarks({
 					);
 				}
 
-				if (!isMounted) return;
-				setRaindrops(sortFavoriteFirst(data.items ?? []));
+				if (!isMounted || requestId !== requestIdRef.current) return;
+
+				const items = sortFavoriteFirst(data.items ?? []);
+				const count = data.count ?? items.length;
+				const nextPage = 1;
+				raindropsQueryCache.set(activeQueryKey, {
+					items,
+					count,
+					nextPage,
+				});
+				setRaindrops(items);
+				setRaindropsCount(count);
+				setNextPage(nextPage);
 			} catch (error) {
 				const message = getErrorMessage(error, "Failed to load bookmarks");
 
-				if (!isMounted) return;
+				if (!isMounted || requestId !== requestIdRef.current) return;
 				setError(message);
 				showToast(
 					Toast.Style.Failure,
@@ -149,7 +226,9 @@ export default function RaindropBookmarks({
 					message,
 				);
 			} finally {
-				if (isMounted) setIsLoadingRaindrops(false);
+				if (isMounted && requestId === requestIdRef.current) {
+					setIsLoadingRaindrops(false);
+				}
 			}
 		}
 
@@ -158,7 +237,13 @@ export default function RaindropBookmarks({
 		return () => {
 			isMounted = false;
 		};
-	}, [request, selectedCollectionId, refreshToken]);
+	}, [
+		activeQueryKey,
+		debouncedSearchText,
+		request,
+		selectedCollectionId,
+		refreshToken,
+	]);
 
 	const childCollectionTitles = useMemo(() => {
 		const titles = new Map(
@@ -219,6 +304,84 @@ export default function RaindropBookmarks({
 		).slice(0, MAX_COLLECTION_SUGGESTIONS);
 	}, [allCollections, searchText, selectedCollectionId]);
 
+	const hasMoreRaindrops = raindrops.length < raindropsCount;
+
+	const loadMoreRaindrops = useCallback(async () => {
+		if (isLoadingRaindrops || isLoadingMore || !hasMoreRaindrops) return;
+
+		const queryKey = activeQueryKey;
+		const requestId = requestIdRef.current;
+		const pageToLoad = nextPage;
+		setIsLoadingMore(true);
+		setLoadMoreError(undefined);
+
+		try {
+			const data = await fetchRaindrops(request, {
+				collectionId: selectedCollectionId,
+				page: pageToLoad,
+				perPage: RAINDROPS_PER_PAGE,
+				search: debouncedSearchText,
+			});
+
+			if (!data.result) {
+				throw new Error(data.errorMessage ?? "Raindrop.io API request failed");
+			}
+
+			if (
+				activeQueryKeyRef.current !== queryKey ||
+				requestIdRef.current !== requestId
+			)
+				return;
+
+			const count = data.count ?? raindropsCount;
+			const nextPage = pageToLoad + 1;
+			setRaindrops((items) => {
+				const mergedItems = sortFavoriteFirst(
+					mergeRaindropsById(items, data.items ?? []),
+				);
+				raindropsQueryCache.set(queryKey, {
+					items: mergedItems,
+					count,
+					nextPage,
+				});
+				return mergedItems;
+			});
+			setRaindropsCount(count);
+			setNextPage(nextPage);
+		} catch (error) {
+			const message = getErrorMessage(error, "Failed to load more bookmarks");
+
+			if (
+				activeQueryKeyRef.current !== queryKey ||
+				requestIdRef.current !== requestId
+			)
+				return;
+			setLoadMoreError(message);
+			showToast(
+				Toast.Style.Failure,
+				"Failed to load more Raindrop.io bookmarks",
+				message,
+			);
+		} finally {
+			if (
+				activeQueryKeyRef.current === queryKey &&
+				requestIdRef.current === requestId
+			) {
+				setIsLoadingMore(false);
+			}
+		}
+	}, [
+		activeQueryKey,
+		debouncedSearchText,
+		hasMoreRaindrops,
+		isLoadingMore,
+		isLoadingRaindrops,
+		nextPage,
+		raindropsCount,
+		request,
+		selectedCollectionId,
+	]);
+
 	const handleCollectionDropdownChange = useCallback(
 		(collectionId: string) => {
 			if (collectionId !== selectedCollectionId) {
@@ -231,6 +394,7 @@ export default function RaindropBookmarks({
 	const renameBookmark = useCallback(
 		async (id: number, title: string) => {
 			try {
+				invalidateRaindropsQueryCache();
 				const data = await request<MutationResponse>(
 					`/raindrop/${id}`,
 					jsonRequestInit("PUT", { title }),
@@ -251,7 +415,7 @@ export default function RaindropBookmarks({
 				throw error;
 			}
 		},
-		[refresh, request],
+		[invalidateRaindropsQueryCache, refresh, request],
 	);
 
 	const toggleFavorite = useCallback(
@@ -259,6 +423,7 @@ export default function RaindropBookmarks({
 			const nextImportant = !raindrop.important;
 
 			try {
+				invalidateRaindropsQueryCache();
 				const data = await request<MutationResponse>(
 					`/raindrops/${getMutationCollectionId(selectedCollectionId, raindrop)}`,
 					jsonRequestInit("PUT", {
@@ -290,12 +455,13 @@ export default function RaindropBookmarks({
 				);
 			}
 		},
-		[refresh, request, selectedCollectionId],
+		[invalidateRaindropsQueryCache, refresh, request, selectedCollectionId],
 	);
 
 	const moveBookmark = useCallback(
 		async (raindrop: Raindrop, collection: Collection) => {
 			try {
+				invalidateRaindropsQueryCache();
 				const data = await request<MutationResponse>(
 					`/raindrops/${getMutationCollectionId(selectedCollectionId, raindrop)}`,
 					jsonRequestInit("PUT", {
@@ -335,7 +501,7 @@ export default function RaindropBookmarks({
 				);
 			}
 		},
-		[refresh, request, selectedCollectionId],
+		[invalidateRaindropsQueryCache, refresh, request, selectedCollectionId],
 	);
 
 	const deleteBookmark = useCallback(
@@ -362,6 +528,7 @@ export default function RaindropBookmarks({
 			if (!confirmed) return;
 
 			try {
+				invalidateRaindropsQueryCache();
 				const data = await request<MutationResponse>(
 					`/raindrops/${isPermanentDelete ? TRASH_COLLECTION_ID : getMutationCollectionId(selectedCollectionId, raindrop)}`,
 					jsonRequestInit("DELETE", { ids: [raindrop._id] }),
@@ -381,7 +548,7 @@ export default function RaindropBookmarks({
 				);
 			}
 		},
-		[refresh, request, selectedCollectionId],
+		[invalidateRaindropsQueryCache, refresh, request, selectedCollectionId],
 	);
 
 	const emptyView = useMemo(() => {
@@ -398,7 +565,9 @@ export default function RaindropBookmarks({
 		return <List.EmptyView icon={Icon.Bookmark} title="No bookmarks found" />;
 	}, [error]);
 	const shouldShowEmptyView =
-		collectionSuggestions.length === 0 && raindrops.length === 0;
+		!isLoadingRaindrops &&
+		collectionSuggestions.length === 0 &&
+		raindrops.length === 0;
 
 	return (
 		<List
@@ -407,7 +576,7 @@ export default function RaindropBookmarks({
 			searchText={searchText}
 			onSearchTextChange={setSearchText}
 			searchBarPlaceholder={`Search in ${selectedCollectionTitle} or type a collection name...`}
-			filtering
+			filtering={false}
 			searchBarAccessory={
 				<CollectionDropdown
 					selectedCollectionId={selectedCollectionId}
@@ -430,8 +599,13 @@ export default function RaindropBookmarks({
 			<BookmarkListSection
 				title={selectedCollectionTitle}
 				raindrops={raindrops}
+				totalCount={raindropsCount}
+				hasMore={hasMoreRaindrops}
+				isLoadingMore={isLoadingMore}
+				loadMoreError={loadMoreError}
 				selectedCollectionId={selectedCollectionId}
 				moveTargetCollections={moveTargetCollections}
+				onLoadMore={loadMoreRaindrops}
 				onRename={renameBookmark}
 				onToggleFavorite={(raindrop) => void toggleFavorite(raindrop)}
 				onMove={(raindrop, collection) =>

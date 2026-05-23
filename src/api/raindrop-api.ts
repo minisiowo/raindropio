@@ -1,7 +1,19 @@
 import { RAINDROP_API_BASE_URL } from "../constants";
-import type { MutationResponse } from "../types";
+import type { MutationResponse, RaindropsResponse } from "../types";
 
-export function createRaindropRequest(apiToken: string) {
+export type RaindropRequest = <T>(
+	path: string,
+	init?: RequestInit,
+) => Promise<T>;
+
+export type GetRaindropsOptions = {
+	collectionId: string;
+	page: number;
+	perPage: number;
+	search?: string;
+};
+
+export function createRaindropRequest(apiToken: string): RaindropRequest {
 	return async function request<T>(path: string, init?: RequestInit) {
 		const headers = new Headers(init?.headers);
 		headers.set("Authorization", `Bearer ${apiToken}`);
@@ -23,6 +35,32 @@ export function createRaindropRequest(apiToken: string) {
 
 		return (data ?? {}) as T;
 	};
+}
+
+export function getRaindropsPath({
+	collectionId,
+	page,
+	perPage,
+	search,
+}: GetRaindropsOptions) {
+	const trimmedSearch = search?.trim();
+	const params = new URLSearchParams({
+		page: page.toString(),
+		perpage: perPage.toString(),
+		sort: trimmedSearch ? "score" : "-created",
+		nested: "true",
+	});
+
+	if (trimmedSearch) params.set("search", trimmedSearch);
+
+	return `/raindrops/${collectionId}?${params.toString()}`;
+}
+
+export function fetchRaindrops(
+	request: RaindropRequest,
+	options: GetRaindropsOptions,
+) {
+	return request<RaindropsResponse>(getRaindropsPath(options));
 }
 
 export function jsonRequestInit(method: string, body: unknown): RequestInit {
