@@ -3,7 +3,10 @@
   "name": "raindropio",
   "title": "raindrop.io",
   "description": "Browse and search your Raindrop.io bookmarks from Vicinae.",
-  "categories": [],
+  "categories": [
+    "Productivity",
+    "Web"
+  ],
   "license": "MIT",
   "author": "minisiowo",
   "contributors": [],
