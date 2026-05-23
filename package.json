@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/vicinaehq/vicinae/refs/heads/main/extra/schemas/extension.json",
+  "name": "raindropio",
+  "title": "raindrop.io",
+  "description": "Browse and search your Raindrop.io bookmarks from Vicinae.",
+  "categories": [],
+  "license": "MIT",
+  "author": "Minisiowo",
+  "contributors": [],
+  "pastContributors": [],
+  "icon": "extension_icon.png",
+  "commands": [
+    {
+      "name": "raindrop",
+      "title": "Raindrop",
+      "subtitle": "Search your bookmarks",
+      "description": "Search your Raindrop.io bookmarks.",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "apiToken",
+      "title": "API Token",
+      "description": "Raindrop.io access token used to fetch bookmarks.",
+      "required": true,
+      "type": "password"
+    }
+  ],
+  "scripts": {
+    "build": "vici build",
+    "dev": "vici develop",
+    "format": "biome format --write src",
+    "lint": "biome check src"
+  },
+  "dependencies": {
+    "@vicinae/api": "^0.8.2",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "@types/react": "^18.3.12",
+    "@biomejs/biome": "2.3.2"
+  }
+}
