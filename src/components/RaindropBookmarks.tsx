@@ -605,6 +605,7 @@ export default function RaindropBookmarks({
 				loadMoreError={loadMoreError}
 				selectedCollectionId={selectedCollectionId}
 				moveTargetCollections={moveTargetCollections}
+				allCollections={allCollections}
 				onLoadMore={loadMoreRaindrops}
 				onRename={renameBookmark}
 				onToggleFavorite={(raindrop) => void toggleFavorite(raindrop)}

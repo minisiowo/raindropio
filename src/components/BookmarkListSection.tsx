@@ -13,6 +13,7 @@ type BookmarkListSectionProps = {
 	loadMoreError?: string;
 	selectedCollectionId: string;
 	moveTargetCollections: Collection[];
+	allCollections: Collection[];
 	onLoadMore: () => void;
 	onRename: (id: number, title: string) => Promise<void>;
 	onToggleFavorite: (raindrop: Raindrop) => void;
@@ -31,6 +32,7 @@ export function BookmarkListSection({
 	loadMoreError,
 	selectedCollectionId,
 	moveTargetCollections,
+	allCollections,
 	onLoadMore,
 	onRename,
 	onToggleFavorite,
@@ -68,7 +70,15 @@ export function BookmarkListSection({
 							Boolean,
 						) as string[]
 					}
-					detail={<List.Item.Detail markdown={getMarkdown(raindrop)} />}
+					detail={
+						<List.Item.Detail
+							markdown={getMarkdown(
+								raindrop,
+								allCollections.find((c) => c._id === raindrop.collection?.$id)
+									?.title ?? "Unknown",
+							)}
+						/>
+					}
 					actions={
 						<BookmarkActions
 							raindrop={raindrop}
