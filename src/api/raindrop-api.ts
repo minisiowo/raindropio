@@ -1,5 +1,9 @@
 import { RAINDROP_API_BASE_URL } from "../constants";
-import type { MutationResponse, RaindropsResponse } from "../types";
+import type {
+	CollectionsResponse,
+	MutationResponse,
+	RaindropsResponse,
+} from "../types";
 
 export type RaindropRequest = <T>(
 	path: string,
@@ -61,6 +65,14 @@ export function fetchRaindrops(
 	options: GetRaindropsOptions,
 ) {
 	return request<RaindropsResponse>(getRaindropsPath(options));
+}
+
+export function fetchRootCollections(request: RaindropRequest) {
+	return request<CollectionsResponse>("/collections");
+}
+
+export function fetchChildCollections(request: RaindropRequest) {
+	return request<CollectionsResponse>("/collections/childrens");
 }
 
 export function jsonRequestInit(method: string, body: unknown): RequestInit {

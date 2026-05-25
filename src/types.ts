@@ -53,6 +53,48 @@ export type RaindropsQueryCacheEntry = {
 	nextPage: number;
 };
 
+export type CacheMetadata = {
+	version: 1;
+	accountKey: string;
+	updatedAt: string;
+	lastSuccessfulSyncAt?: string;
+	queryKeys: string[];
+};
+
+export type CachedCollections = {
+	version: 1;
+	accountKey: string;
+	updatedAt: string;
+	rootCollections: Collection[];
+	childCollections: Collection[];
+};
+
+export type CachedRaindropsQuerySource = "query" | "full-index";
+
+export type CachedRaindropsQuery = {
+	version: 1;
+	accountKey: string;
+	updatedAt: string;
+	collectionId: string;
+	search: string;
+	items: Raindrop[];
+	count: number;
+	nextPage: number;
+	loadedPages: number[];
+	isComplete: boolean;
+	source: CachedRaindropsQuerySource;
+};
+
+export type CachedRaindropsIndex = {
+	version: 1;
+	accountKey: string;
+	updatedAt: string;
+	items: Raindrop[];
+	count: number;
+	isComplete: boolean;
+	nextPage: number;
+};
+
 export type RaindropBookmarksProps = {
 	initialCollectionId?: string;
 };

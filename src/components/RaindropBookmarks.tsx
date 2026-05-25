@@ -16,6 +16,18 @@ import {
 	jsonRequestInit,
 } from "../api/raindrop-api";
 import {
+	clearCachedQueries,
+	getRaindropAccountKey,
+	patchCachedRaindrop,
+	readAllIndex,
+	readCollections,
+	readQuery,
+	removeCachedRaindrop,
+	writeAllIndex,
+	writeCollections,
+	writeQuery,
+} from "../cache/raindrop-cache";
+import {
 	ALL_BOOKMARKS_COLLECTION_ID,
 	BUILT_IN_COLLECTIONS,
 	MAX_COLLECTION_SUGGESTIONS,
@@ -23,9 +35,13 @@ import {
 	SERVER_SEARCH_DEBOUNCE_MS,
 	TRASH_COLLECTION_ID,
 } from "../constants";
+import {
+	fetchCollections,
+	fetchFirstRaindropQueryPage,
+	syncAllBookmarksIndex,
+} from "../sync/raindrop-sync";
 import type {
 	Collection,
-	CollectionsResponse,
 	MutationResponse,
 	Preferences,
 	Raindrop,
@@ -43,6 +59,7 @@ import {
 } from "../utils/collections";
 import { getErrorMessage } from "../utils/errors";
 import { mergeRaindropsById, sortFavoriteFirst } from "../utils/raindrops";
+import { searchRaindropsLocally } from "../utils/search";
 import { BookmarkListSection } from "./BookmarkListSection";
 import { CollectionDropdown } from "./CollectionDropdown";
 import { CollectionSuggestionsSection } from "./CollectionSuggestionsSection";
@@ -54,10 +71,60 @@ function getRaindropsQueryKey(collectionId: string, search: string) {
 	return `${collectionId}:${normalize(search)}`;
 }
 
+function getLocalRaindropsForQuery(
+	raindrops: Raindrop[],
+	collectionId: string,
+	search: string,
+	collections: Collection[],
+) {
+	if (collectionId === TRASH_COLLECTION_ID.toString()) return undefined;
+
+	const collectionIds = getLocalCollectionIds(collectionId, collections);
+	const collectionRaindrops =
+		collectionId === ALL_BOOKMARKS_COLLECTION_ID.toString()
+			? raindrops
+			: raindrops.filter(
+					(raindrop) =>
+						raindrop.collection?.$id !== undefined &&
+						collectionIds.has(raindrop.collection.$id.toString()),
+				);
+
+	return searchRaindropsLocally(collectionRaindrops, search, collections);
+}
+
+function getLocalCollectionIds(
+	collectionId: string,
+	collections: Collection[],
+) {
+	const collectionIds = new Set([collectionId]);
+	let addedCollection = true;
+
+	while (addedCollection) {
+		addedCollection = false;
+
+		for (const collection of collections) {
+			const parentId = collection.parent?.$id?.toString();
+			const childId = collection._id.toString();
+
+			if (
+				parentId &&
+				collectionIds.has(parentId) &&
+				!collectionIds.has(childId)
+			) {
+				collectionIds.add(childId);
+				addedCollection = true;
+			}
+		}
+	}
+
+	return collectionIds;
+}
+
 export default function RaindropBookmarks({
 	initialCollectionId = ALL_BOOKMARKS_COLLECTION_ID.toString(),
 }: RaindropBookmarksProps = {}) {
 	const { apiToken } = getPreferenceValues<Preferences>();
+	const accountKey = useMemo(() => getRaindropAccountKey(apiToken), [apiToken]);
 	const { push } = useNavigation();
 	const [raindrops, setRaindrops] = useState<Raindrop[]>([]);
 	const [raindropsCount, setRaindropsCount] = useState(0);
@@ -77,17 +144,42 @@ export default function RaindropBookmarks({
 	const activeQueryKeyRef = useRef("");
 
 	useEffect(() => {
-		if (raindropsQueryCacheToken === apiToken) return;
+		if (raindropsQueryCacheToken === accountKey) return;
 
 		raindropsQueryCache.clear();
-		raindropsQueryCacheToken = apiToken;
-	}, [apiToken]);
+		raindropsQueryCacheToken = accountKey;
+	}, [accountKey]);
 
 	const request = useMemo(() => createRaindropRequest(apiToken), [apiToken]);
 	const activeQueryKey = useMemo(
 		() => getRaindropsQueryKey(selectedCollectionId, debouncedSearchText),
 		[selectedCollectionId, debouncedSearchText],
 	);
+
+	useEffect(() => {
+		let isCancelled = false;
+		const cachedAllIndex = readAllIndex(accountKey);
+
+		if (cachedAllIndex?.isComplete) return;
+
+		void syncAllBookmarksIndex(request, {
+			onPage: (page) => {
+				if (isCancelled) return;
+				writeAllIndex(accountKey, {
+					items: sortFavoriteFirst(page.items),
+					count: page.count,
+					isComplete: page.isComplete,
+					nextPage: page.nextPage,
+				});
+			},
+		}).catch(() => {
+			// Keep startup local-first and do not discard existing cached data on sync failure.
+		});
+
+		return () => {
+			isCancelled = true;
+		};
+	}, [accountKey, request]);
 
 	const invalidateRaindropsQueryCache = useCallback(() => {
 		raindropsQueryCache.clear();
@@ -113,32 +205,22 @@ export default function RaindropBookmarks({
 		let isMounted = true;
 
 		async function loadCollections() {
-			setIsLoadingCollections(true);
+			const cachedCollections = readCollections(accountKey);
+			if (cachedCollections) {
+				setRootCollections(cachedCollections.rootCollections);
+				setChildCollections(cachedCollections.childCollections);
+				setIsLoadingCollections(false);
+			} else {
+				setIsLoadingCollections(true);
+			}
 
 			try {
-				const [rootCollectionsResponse, childCollectionsResponse] =
-					await Promise.all([
-						request<CollectionsResponse>("/collections"),
-						request<CollectionsResponse>("/collections/childrens"),
-					]);
-
-				if (!rootCollectionsResponse.result) {
-					throw new Error(
-						rootCollectionsResponse.errorMessage ??
-							"Could not load root collections",
-					);
-				}
-
-				if (!childCollectionsResponse.result) {
-					throw new Error(
-						childCollectionsResponse.errorMessage ??
-							"Could not load child collections",
-					);
-				}
+				const collections = await fetchCollections(request);
 
 				if (!isMounted) return;
-				setRootCollections(rootCollectionsResponse.items ?? []);
-				setChildCollections(childCollectionsResponse.items ?? []);
+				writeCollections(accountKey, collections);
+				setRootCollections(collections.rootCollections);
+				setChildCollections(collections.childCollections);
 			} catch (error) {
 				const message = getErrorMessage(error, "Failed to load collections");
 
@@ -158,7 +240,7 @@ export default function RaindropBookmarks({
 		return () => {
 			isMounted = false;
 		};
-	}, [request, refreshToken]);
+	}, [accountKey, request, refreshToken]);
 
 	useEffect(() => {
 		void refreshToken;
@@ -167,8 +249,14 @@ export default function RaindropBookmarks({
 		activeQueryKeyRef.current = activeQueryKey;
 		setIsLoadingMore(false);
 		setLoadMoreError(undefined);
+		const queryCollections = [
+			...BUILT_IN_COLLECTIONS,
+			...rootCollections,
+			...childCollections,
+		];
 
 		const cachedQuery = raindropsQueryCache.get(activeQueryKey);
+		let hasHydratedRaindrops = false;
 		if (cachedQuery) {
 			setRaindrops(cachedQuery.items);
 			setRaindropsCount(cachedQuery.count);
@@ -176,41 +264,89 @@ export default function RaindropBookmarks({
 			setError(undefined);
 			setIsLoadingMore(false);
 			setIsLoadingRaindrops(false);
-			return;
+			hasHydratedRaindrops = true;
+		} else {
+			const persistedQuery = readQuery(
+				accountKey,
+				selectedCollectionId,
+				debouncedSearchText,
+			);
+			if (persistedQuery) {
+				raindropsQueryCache.set(activeQueryKey, {
+					items: persistedQuery.items,
+					count: persistedQuery.count,
+					nextPage: persistedQuery.nextPage,
+				});
+				setRaindrops(persistedQuery.items);
+				setRaindropsCount(persistedQuery.count);
+				setNextPage(persistedQuery.nextPage);
+				setError(undefined);
+				setIsLoadingRaindrops(false);
+				hasHydratedRaindrops = true;
+			} else {
+				const allIndex = readAllIndex(accountKey);
+				if (allIndex?.isComplete) {
+					const items = getLocalRaindropsForQuery(
+						allIndex.items,
+						selectedCollectionId,
+						debouncedSearchText,
+						queryCollections,
+					);
+					if (items) {
+						const nextPage = 0;
+						raindropsQueryCache.set(activeQueryKey, {
+							items,
+							count: items.length,
+							nextPage,
+						});
+						setRaindrops(items);
+						setRaindropsCount(items.length);
+						setNextPage(nextPage);
+						setError(undefined);
+						setIsLoadingRaindrops(false);
+						hasHydratedRaindrops = true;
+					}
+				}
+			}
 		}
 
 		let isMounted = true;
 
 		async function loadRaindrops() {
-			setIsLoadingRaindrops(true);
+			setIsLoadingRaindrops(!hasHydratedRaindrops);
 			setError(undefined);
-			setRaindrops([]);
-			setRaindropsCount(0);
-			setNextPage(0);
+			if (!hasHydratedRaindrops) {
+				setRaindrops([]);
+				setRaindropsCount(0);
+				setNextPage(0);
+			}
 
 			try {
-				const data = await fetchRaindrops(request, {
+				const data = await fetchFirstRaindropQueryPage(request, {
 					collectionId: selectedCollectionId,
-					page: 0,
 					perPage: RAINDROPS_PER_PAGE,
 					search: debouncedSearchText,
 				});
 
-				if (!data.result) {
-					throw new Error(
-						data.errorMessage ?? "Raindrop.io API request failed",
-					);
-				}
-
 				if (!isMounted || requestId !== requestIdRef.current) return;
 
-				const items = sortFavoriteFirst(data.items ?? []);
-				const count = data.count ?? items.length;
-				const nextPage = 1;
+				const items = sortFavoriteFirst(data.items);
+				const count = data.count;
+				const nextPage = data.nextPage;
 				raindropsQueryCache.set(activeQueryKey, {
 					items,
 					count,
 					nextPage,
+				});
+				writeQuery(accountKey, {
+					collectionId: selectedCollectionId,
+					search: debouncedSearchText,
+					items,
+					count,
+					nextPage,
+					loadedPages: data.loadedPages,
+					isComplete: data.isComplete,
+					source: "query",
 				});
 				setRaindrops(items);
 				setRaindropsCount(count);
@@ -219,10 +355,14 @@ export default function RaindropBookmarks({
 				const message = getErrorMessage(error, "Failed to load bookmarks");
 
 				if (!isMounted || requestId !== requestIdRef.current) return;
-				setError(message);
+				if (!hasHydratedRaindrops) {
+					setError(message);
+				}
 				showToast(
 					Toast.Style.Failure,
-					"Failed to load Raindrop.io bookmarks",
+					hasHydratedRaindrops
+						? "Could not sync Raindrop.io bookmarks"
+						: "Failed to load Raindrop.io bookmarks",
 					message,
 				);
 			} finally {
@@ -238,9 +378,12 @@ export default function RaindropBookmarks({
 			isMounted = false;
 		};
 	}, [
+		accountKey,
 		activeQueryKey,
+		childCollections,
 		debouncedSearchText,
 		request,
+		rootCollections,
 		selectedCollectionId,
 		refreshToken,
 	]);
@@ -339,10 +482,24 @@ export default function RaindropBookmarks({
 				const mergedItems = sortFavoriteFirst(
 					mergeRaindropsById(items, data.items ?? []),
 				);
+				const loadedPages = Array.from(
+					{ length: nextPage },
+					(_value, index) => index,
+				);
 				raindropsQueryCache.set(queryKey, {
 					items: mergedItems,
 					count,
 					nextPage,
+				});
+				writeQuery(accountKey, {
+					collectionId: selectedCollectionId,
+					search: debouncedSearchText,
+					items: mergedItems,
+					count,
+					nextPage,
+					loadedPages,
+					isComplete: mergedItems.length >= count,
+					source: "query",
 				});
 				return mergedItems;
 			});
@@ -371,6 +528,7 @@ export default function RaindropBookmarks({
 			}
 		}
 	}, [
+		accountKey,
 		activeQueryKey,
 		debouncedSearchText,
 		hasMoreRaindrops,
@@ -394,12 +552,13 @@ export default function RaindropBookmarks({
 	const renameBookmark = useCallback(
 		async (id: number, title: string) => {
 			try {
-				invalidateRaindropsQueryCache();
 				const data = await request<MutationResponse>(
 					`/raindrop/${id}`,
 					jsonRequestInit("PUT", { title }),
 				);
 				ensureMutationResult(data, "Could not rename bookmark");
+				patchCachedRaindrop(accountKey, id, { title });
+				clearCachedQueries(accountKey);
 
 				setRaindrops((items) =>
 					items.map((item) => (item._id === id ? { ...item, title } : item)),
@@ -415,7 +574,7 @@ export default function RaindropBookmarks({
 				throw error;
 			}
 		},
-		[invalidateRaindropsQueryCache, refresh, request],
+		[accountKey, refresh, request],
 	);
 
 	const toggleFavorite = useCallback(
@@ -423,7 +582,6 @@ export default function RaindropBookmarks({
 			const nextImportant = !raindrop.important;
 
 			try {
-				invalidateRaindropsQueryCache();
 				const data = await request<MutationResponse>(
 					`/raindrops/${getMutationCollectionId(selectedCollectionId, raindrop)}`,
 					jsonRequestInit("PUT", {
@@ -432,6 +590,9 @@ export default function RaindropBookmarks({
 					}),
 				);
 				ensureMutationResult(data, "Could not update favorite");
+				patchCachedRaindrop(accountKey, raindrop._id, {
+					important: nextImportant,
+				});
 
 				setRaindrops((items) =>
 					sortFavoriteFirst(
@@ -455,13 +616,12 @@ export default function RaindropBookmarks({
 				);
 			}
 		},
-		[invalidateRaindropsQueryCache, refresh, request, selectedCollectionId],
+		[accountKey, refresh, request, selectedCollectionId],
 	);
 
 	const moveBookmark = useCallback(
 		async (raindrop: Raindrop, collection: Collection) => {
 			try {
-				invalidateRaindropsQueryCache();
 				const data = await request<MutationResponse>(
 					`/raindrops/${getMutationCollectionId(selectedCollectionId, raindrop)}`,
 					jsonRequestInit("PUT", {
@@ -470,6 +630,10 @@ export default function RaindropBookmarks({
 					}),
 				);
 				ensureMutationResult(data, "Could not move bookmark");
+				patchCachedRaindrop(accountKey, raindrop._id, {
+					collection: { $id: collection._id },
+				});
+				clearCachedQueries(accountKey);
 
 				if (
 					selectedCollectionId !== ALL_BOOKMARKS_COLLECTION_ID.toString() &&
@@ -501,7 +665,7 @@ export default function RaindropBookmarks({
 				);
 			}
 		},
-		[invalidateRaindropsQueryCache, refresh, request, selectedCollectionId],
+		[accountKey, refresh, request, selectedCollectionId],
 	);
 
 	const deleteBookmark = useCallback(
@@ -528,12 +692,12 @@ export default function RaindropBookmarks({
 			if (!confirmed) return;
 
 			try {
-				invalidateRaindropsQueryCache();
 				const data = await request<MutationResponse>(
 					`/raindrops/${isPermanentDelete ? TRASH_COLLECTION_ID : getMutationCollectionId(selectedCollectionId, raindrop)}`,
 					jsonRequestInit("DELETE", { ids: [raindrop._id] }),
 				);
 				ensureMutationResult(data, `Could not ${actionTitle.toLowerCase()}`);
+				removeCachedRaindrop(accountKey, raindrop._id);
 
 				setRaindrops((items) =>
 					items.filter((item) => item._id !== raindrop._id),
@@ -548,7 +712,7 @@ export default function RaindropBookmarks({
 				);
 			}
 		},
-		[invalidateRaindropsQueryCache, refresh, request, selectedCollectionId],
+		[accountKey, refresh, request, selectedCollectionId],
 	);
 
 	const emptyView = useMemo(() => {
