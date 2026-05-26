@@ -23,11 +23,6 @@ export function CollectionSuggestionsSection({
 					subtitle={getCollectionSubtitle(collection)}
 					icon={Icon.Folder}
 					keywords={[collection.title]}
-					detail={
-						<List.Item.Detail
-							markdown={`# ${getCollectionName(collection)}\n\n${getCollectionSubtitle(collection)}\n\nPress **Enter** to search inside this collection.`}
-						/>
-					}
 					actions={
 						<ActionPanel>
 							<Action.Push

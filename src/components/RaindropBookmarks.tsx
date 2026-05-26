@@ -736,7 +736,6 @@ export default function RaindropBookmarks({
 	return (
 		<List
 			isLoading={isLoadingRaindrops}
-			isShowingDetail
 			onSearchTextChange={setSearchText}
 			searchBarPlaceholder={`Search in ${selectedCollectionTitle} or type a collection name...`}
 			filtering={false}
@@ -768,7 +767,6 @@ export default function RaindropBookmarks({
 				loadMoreError={loadMoreError}
 				selectedCollectionId={selectedCollectionId}
 				moveTargetCollections={moveTargetCollections}
-				allCollections={allCollections}
 				onLoadMore={loadMoreRaindrops}
 				onRename={renameBookmark}
 				onToggleFavorite={(raindrop) => void toggleFavorite(raindrop)}

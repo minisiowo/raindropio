@@ -1,7 +1,6 @@
 import { Action, ActionPanel, Icon, List } from "@vicinae/api";
 import type { ReactNode } from "react";
 import type { Collection, Raindrop } from "../types";
-import { getMarkdown } from "../utils/markdown";
 import { BookmarkActions } from "./BookmarkActions";
 
 type BookmarkListSectionProps = {
@@ -13,7 +12,6 @@ type BookmarkListSectionProps = {
 	loadMoreError?: string;
 	selectedCollectionId: string;
 	moveTargetCollections: Collection[];
-	allCollections: Collection[];
 	onLoadMore: () => void;
 	onRename: (id: number, title: string) => Promise<void>;
 	onToggleFavorite: (raindrop: Raindrop) => void;
@@ -32,7 +30,6 @@ export function BookmarkListSection({
 	loadMoreError,
 	selectedCollectionId,
 	moveTargetCollections,
-	allCollections,
 	onLoadMore,
 	onRename,
 	onToggleFavorite,
@@ -69,15 +66,6 @@ export function BookmarkListSection({
 						[raindrop.domain, ...(raindrop.tags ?? [])].filter(
 							Boolean,
 						) as string[]
-					}
-					detail={
-						<List.Item.Detail
-							markdown={getMarkdown(
-								raindrop,
-								allCollections.find((c) => c._id === raindrop.collection?.$id)
-									?.title ?? "Unknown",
-							)}
-						/>
 					}
 					actions={
 						<BookmarkActions
