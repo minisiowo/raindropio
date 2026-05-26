@@ -26,10 +26,6 @@ export function formatDate(dateString?: string) {
 export function getMarkdown(raindrop: Raindrop, collectionName = "Unknown") {
 	const lines: string[] = [];
 
-	if (raindrop.cover) {
-		lines.push(`![Cover](${raindrop.cover})`);
-	}
-
 	lines.push(`# ${raindrop.title || "Untitled"}`);
 
 	if (raindrop.excerpt?.trim()) {
@@ -51,6 +47,10 @@ export function getMarkdown(raindrop: Raindrop, collectionName = "Unknown") {
 			`| **Tags** | ${tagsStr} |`,
 		].join("\n"),
 	);
+
+	if (raindrop.cover) {
+		lines.push(`![Cover](${raindrop.cover})`);
+	}
 
 	return lines.join("\n\n");
 }

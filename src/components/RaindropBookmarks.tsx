@@ -737,7 +737,6 @@ export default function RaindropBookmarks({
 		<List
 			isLoading={isLoadingRaindrops}
 			isShowingDetail
-			searchText={searchText}
 			onSearchTextChange={setSearchText}
 			searchBarPlaceholder={`Search in ${selectedCollectionTitle} or type a collection name...`}
 			filtering={false}
