@@ -47,6 +47,18 @@ export type MutationResponse = {
 	errorMessage?: string;
 };
 
+export type CreateRaindropInput = {
+	link: string;
+	title?: string;
+	excerpt?: string;
+	tags?: string[];
+	important?: boolean;
+	collection?: {
+		$id: number;
+	};
+	pleaseParse?: Record<string, never>;
+};
+
 export type RaindropsQueryCacheEntry = {
 	items: Raindrop[];
 	count: number;
@@ -97,4 +109,5 @@ export type CachedRaindropsIndex = {
 
 export type RaindropBookmarksProps = {
 	initialCollectionId?: string;
+	initialTagFilter?: string;
 };

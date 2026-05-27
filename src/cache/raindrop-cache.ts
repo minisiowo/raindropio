@@ -24,6 +24,7 @@ const raindropCache = new Cache({
 	namespace: RAINDROP_CACHE_NAMESPACE,
 	capacity: RAINDROP_CACHE_CAPACITY_BYTES,
 });
+const cacheInvalidationSubscribers = new Set<() => void>();
 
 type CacheKey = string;
 type RaindropPatch = Partial<Raindrop> | ((raindrop: Raindrop) => Raindrop);
@@ -96,6 +97,7 @@ export function removeQuery(
 	const key = getQueryKey(accountKey, collectionId, search);
 	raindropCache.remove(key);
 	removeKnownQueryKey(accountKey, key);
+	notifyCacheInvalidationSubscribers();
 }
 
 export function readAllIndex(accountKey: string) {
@@ -118,6 +120,11 @@ export function writeAllIndex(
 	};
 
 	writeCachedValue(getAllIndexKey(accountKey), cachedIndex);
+}
+
+export function removeAllIndex(accountKey: string) {
+	raindropCache.remove(getAllIndexKey(accountKey));
+	notifyCacheInvalidationSubscribers();
 }
 
 export function patchCachedRaindrop(
@@ -189,6 +196,7 @@ export function clearCachedQueries(accountKey: string) {
 		lastSuccessfulSyncAt: metadata?.lastSuccessfulSyncAt,
 		queryKeys: [],
 	});
+	notifyCacheInvalidationSubscribers();
 }
 
 export function clearAccountCache(accountKey: string) {
@@ -199,6 +207,15 @@ export function clearAccountCache(accountKey: string) {
 	raindropCache.remove(getCollectionsKey(accountKey));
 	raindropCache.remove(getAllIndexKey(accountKey));
 	raindropCache.remove(getMetadataKey(accountKey));
+	notifyCacheInvalidationSubscribers();
+}
+
+export function subscribeCacheInvalidation(subscriber: () => void) {
+	cacheInvalidationSubscribers.add(subscriber);
+
+	return () => {
+		cacheInvalidationSubscribers.delete(subscriber);
+	};
 }
 
 export function getRaindropsQueryCacheKey(
@@ -334,6 +351,12 @@ function readCachedValue<T>(
 
 function writeCachedValue(key: CacheKey, value: unknown) {
 	raindropCache.set(key, JSON.stringify(value));
+}
+
+function notifyCacheInvalidationSubscribers() {
+	for (const subscriber of cacheInvalidationSubscribers) {
+		subscriber();
+	}
 }
 
 function safeParseJson(value: string | undefined) {

@@ -23,6 +23,7 @@ import {
 	readCollections,
 	readQuery,
 	removeCachedRaindrop,
+	subscribeCacheInvalidation,
 	writeAllIndex,
 	writeCollections,
 	writeQuery,
@@ -31,6 +32,7 @@ import {
 	ALL_BOOKMARKS_COLLECTION_ID,
 	BUILT_IN_COLLECTIONS,
 	MAX_COLLECTION_SUGGESTIONS,
+	MAX_TAG_SUGGESTIONS,
 	RAINDROPS_PER_PAGE,
 	SERVER_SEARCH_DEBOUNCE_MS,
 	TRASH_COLLECTION_ID,
@@ -60,15 +62,27 @@ import {
 import { getErrorMessage } from "../utils/errors";
 import { mergeRaindropsById, sortFavoriteFirst } from "../utils/raindrops";
 import { searchRaindropsLocally } from "../utils/search";
+import { getSearchSuggestionMode } from "../utils/search-modes";
+import {
+	filterRaindropsByTag,
+	getTagMatchScore,
+	getTagSuggestionsFromRaindrops,
+	uniqueTagSuggestions,
+} from "../utils/tags";
 import { BookmarkListSection } from "./BookmarkListSection";
 import { CollectionDropdown } from "./CollectionDropdown";
 import { CollectionSuggestionsSection } from "./CollectionSuggestionsSection";
+import { TagSuggestionsSection } from "./TagSuggestionsSection";
 
 const raindropsQueryCache = new Map<string, RaindropsQueryCacheEntry>();
 let raindropsQueryCacheToken: string | undefined;
 
-function getRaindropsQueryKey(collectionId: string, search: string) {
-	return `${collectionId}:${normalize(search)}`;
+function getRaindropsQueryKey(
+	collectionId: string,
+	search: string,
+	tag?: string,
+) {
+	return `${collectionId}:${normalize(tag ?? "")}:${normalize(search)}`;
 }
 
 function getLocalRaindropsForQuery(
@@ -76,6 +90,7 @@ function getLocalRaindropsForQuery(
 	collectionId: string,
 	search: string,
 	collections: Collection[],
+	tag?: string,
 ) {
 	if (collectionId === TRASH_COLLECTION_ID.toString()) return undefined;
 
@@ -89,7 +104,9 @@ function getLocalRaindropsForQuery(
 						collectionIds.has(raindrop.collection.$id.toString()),
 				);
 
-	return searchRaindropsLocally(collectionRaindrops, search, collections);
+	const tagFilteredRaindrops = filterRaindropsByTag(collectionRaindrops, tag);
+
+	return searchRaindropsLocally(tagFilteredRaindrops, search, collections);
 }
 
 function getLocalCollectionIds(
@@ -122,6 +139,7 @@ function getLocalCollectionIds(
 
 export default function RaindropBookmarks({
 	initialCollectionId = ALL_BOOKMARKS_COLLECTION_ID.toString(),
+	initialTagFilter,
 }: RaindropBookmarksProps = {}) {
 	const { apiToken } = getPreferenceValues<Preferences>();
 	const accountKey = useMemo(() => getRaindropAccountKey(apiToken), [apiToken]);
@@ -132,14 +150,24 @@ export default function RaindropBookmarks({
 	const [rootCollections, setRootCollections] = useState<Collection[]>([]);
 	const [childCollections, setChildCollections] = useState<Collection[]>([]);
 	const [selectedCollectionId] = useState(initialCollectionId);
+	const [selectedTagFilter] = useState(initialTagFilter);
 	const [searchText, setSearchText] = useState("");
 	const [debouncedSearchText, setDebouncedSearchText] = useState("");
+	const [allIndexItems, setAllIndexItems] = useState<Raindrop[]>(() => {
+		const cachedAllIndex = readAllIndex(accountKey);
+		return cachedAllIndex?.items ?? [];
+	});
+	const [isAllIndexComplete, setIsAllIndexComplete] = useState(() => {
+		const cachedAllIndex = readAllIndex(accountKey);
+		return cachedAllIndex?.isComplete ?? false;
+	});
 	const [isLoadingRaindrops, setIsLoadingRaindrops] = useState(true);
 	const [isLoadingMore, setIsLoadingMore] = useState(false);
 	const [isLoadingCollections, setIsLoadingCollections] = useState(true);
 	const [error, setError] = useState<string>();
 	const [loadMoreError, setLoadMoreError] = useState<string>();
 	const [refreshToken, setRefreshToken] = useState(0);
+	const [allIndexSyncFailed, setAllIndexSyncFailed] = useState(false);
 	const requestIdRef = useRef(0);
 	const activeQueryKeyRef = useRef("");
 
@@ -151,28 +179,45 @@ export default function RaindropBookmarks({
 	}, [accountKey]);
 
 	const request = useMemo(() => createRaindropRequest(apiToken), [apiToken]);
+	const searchMode = useMemo(
+		() => getSearchSuggestionMode(searchText),
+		[searchText],
+	);
+	const bookmarkSearchText = searchMode.kind === "bookmarks" ? searchText : "";
 	const activeQueryKey = useMemo(
-		() => getRaindropsQueryKey(selectedCollectionId, debouncedSearchText),
-		[selectedCollectionId, debouncedSearchText],
+		() =>
+			getRaindropsQueryKey(
+				selectedCollectionId,
+				debouncedSearchText,
+				selectedTagFilter,
+			),
+		[debouncedSearchText, selectedCollectionId, selectedTagFilter],
 	);
 
 	useEffect(() => {
 		let isCancelled = false;
 		const cachedAllIndex = readAllIndex(accountKey);
+		setAllIndexItems(cachedAllIndex?.items ?? []);
+		setIsAllIndexComplete(cachedAllIndex?.isComplete ?? false);
+		setAllIndexSyncFailed(false);
 
 		if (cachedAllIndex?.isComplete) return;
 
 		void syncAllBookmarksIndex(request, {
 			onPage: (page) => {
 				if (isCancelled) return;
+				const items = sortFavoriteFirst(page.items);
 				writeAllIndex(accountKey, {
-					items: sortFavoriteFirst(page.items),
+					items,
 					count: page.count,
 					isComplete: page.isComplete,
 					nextPage: page.nextPage,
 				});
+				setAllIndexItems(items);
+				setIsAllIndexComplete(page.isComplete);
 			},
 		}).catch(() => {
+			if (!isCancelled) setAllIndexSyncFailed(true);
 			// Keep startup local-first and do not discard existing cached data on sync failure.
 		});
 
@@ -193,12 +238,22 @@ export default function RaindropBookmarks({
 	}, [invalidateRaindropsQueryCache]);
 
 	useEffect(() => {
+		return subscribeCacheInvalidation(() => {
+			invalidateRaindropsQueryCache();
+			const cachedAllIndex = readAllIndex(accountKey);
+			setAllIndexItems(cachedAllIndex?.items ?? []);
+			setIsAllIndexComplete(cachedAllIndex?.isComplete ?? false);
+			setRefreshToken((current) => current + 1);
+		});
+	}, [accountKey, invalidateRaindropsQueryCache]);
+
+	useEffect(() => {
 		const timeout = setTimeout(() => {
-			setDebouncedSearchText(searchText.trim());
+			setDebouncedSearchText(bookmarkSearchText.trim());
 		}, SERVER_SEARCH_DEBOUNCE_MS);
 
 		return () => clearTimeout(timeout);
-	}, [searchText]);
+	}, [bookmarkSearchText]);
 
 	useEffect(() => {
 		void refreshToken;
@@ -255,7 +310,9 @@ export default function RaindropBookmarks({
 			...childCollections,
 		];
 
-		const cachedQuery = raindropsQueryCache.get(activeQueryKey);
+		const cachedQuery = selectedTagFilter
+			? undefined
+			: raindropsQueryCache.get(activeQueryKey);
 		let hasHydratedRaindrops = false;
 		if (cachedQuery) {
 			setRaindrops(cachedQuery.items);
@@ -265,32 +322,64 @@ export default function RaindropBookmarks({
 			setIsLoadingMore(false);
 			setIsLoadingRaindrops(false);
 			hasHydratedRaindrops = true;
+		} else if (
+			selectedTagFilter &&
+			isAllIndexComplete &&
+			selectedCollectionId !== TRASH_COLLECTION_ID.toString()
+		) {
+			const items = getLocalRaindropsForQuery(
+				allIndexItems,
+				selectedCollectionId,
+				debouncedSearchText,
+				queryCollections,
+				selectedTagFilter,
+			);
+			if (items) {
+				const nextPage = 0;
+				raindropsQueryCache.set(activeQueryKey, {
+					items,
+					count: items.length,
+					nextPage,
+				});
+				setRaindrops(items);
+				setRaindropsCount(items.length);
+				setNextPage(nextPage);
+				setError(undefined);
+				setIsLoadingRaindrops(false);
+				hasHydratedRaindrops = true;
+			}
 		} else {
 			const persistedQuery = readQuery(
 				accountKey,
 				selectedCollectionId,
 				debouncedSearchText,
 			);
-			if (persistedQuery) {
+			if (persistedQuery && !selectedTagFilter) {
+				const items = filterRaindropsByTag(
+					persistedQuery.items,
+					selectedTagFilter,
+				);
+				const count = selectedTagFilter ? items.length : persistedQuery.count;
+				const nextPage = selectedTagFilter ? 0 : persistedQuery.nextPage;
 				raindropsQueryCache.set(activeQueryKey, {
-					items: persistedQuery.items,
-					count: persistedQuery.count,
-					nextPage: persistedQuery.nextPage,
+					items,
+					count,
+					nextPage,
 				});
-				setRaindrops(persistedQuery.items);
-				setRaindropsCount(persistedQuery.count);
-				setNextPage(persistedQuery.nextPage);
+				setRaindrops(items);
+				setRaindropsCount(count);
+				setNextPage(nextPage);
 				setError(undefined);
 				setIsLoadingRaindrops(false);
 				hasHydratedRaindrops = true;
 			} else {
-				const allIndex = readAllIndex(accountKey);
-				if (allIndex?.isComplete) {
+				if (isAllIndexComplete) {
 					const items = getLocalRaindropsForQuery(
-						allIndex.items,
+						allIndexItems,
 						selectedCollectionId,
 						debouncedSearchText,
 						queryCollections,
+						selectedTagFilter,
 					);
 					if (items) {
 						const nextPage = 0;
@@ -319,6 +408,17 @@ export default function RaindropBookmarks({
 				setRaindrops([]);
 				setRaindropsCount(0);
 				setNextPage(0);
+			}
+
+			if (selectedTagFilter) {
+				if (!hasHydratedRaindrops && allIndexSyncFailed) {
+					setError("Could not build the local tag index");
+					setIsLoadingRaindrops(false);
+					return;
+				}
+
+				if (!hasHydratedRaindrops) setIsLoadingRaindrops(true);
+				return;
 			}
 
 			try {
@@ -380,11 +480,15 @@ export default function RaindropBookmarks({
 	}, [
 		accountKey,
 		activeQueryKey,
+		allIndexItems,
+		allIndexSyncFailed,
 		childCollections,
 		debouncedSearchText,
+		isAllIndexComplete,
 		request,
 		rootCollections,
 		selectedCollectionId,
+		selectedTagFilter,
 		refreshToken,
 	]);
 
@@ -428,15 +532,22 @@ export default function RaindropBookmarks({
 	}, [allCollections, selectedCollectionId]);
 
 	const collectionSuggestions = useMemo(() => {
-		const query = normalize(searchText);
+		if (searchMode.kind !== "collections") return [];
 
-		if (query.length < 2) return [];
+		const query = normalize(searchMode.query);
+		const candidates = allCollections.filter(
+			(collection) => collection._id.toString() !== selectedCollectionId,
+		);
+
+		if (!query) {
+			return uniqueCollectionSuggestions(candidates).slice(
+				0,
+				MAX_COLLECTION_SUGGESTIONS,
+			);
+		}
 
 		return uniqueCollectionSuggestions(
-			allCollections
-				.filter(
-					(collection) => collection._id.toString() !== selectedCollectionId,
-				)
+			candidates
 				.map((collection) => ({
 					collection,
 					score: getCollectionMatchScore(collection.title, query),
@@ -445,7 +556,59 @@ export default function RaindropBookmarks({
 				.sort((left, right) => right.score - left.score)
 				.map(({ collection }) => collection),
 		).slice(0, MAX_COLLECTION_SUGGESTIONS);
-	}, [allCollections, searchText, selectedCollectionId]);
+	}, [allCollections, searchMode, selectedCollectionId]);
+
+	const tagSourceRaindrops = useMemo(() => {
+		const sourceRaindrops = isAllIndexComplete ? allIndexItems : raindrops;
+		const scopedRaindrops = getLocalRaindropsForQuery(
+			sourceRaindrops,
+			selectedCollectionId,
+			"",
+			allCollections,
+		);
+
+		return scopedRaindrops ?? sourceRaindrops;
+	}, [
+		allCollections,
+		allIndexItems,
+		isAllIndexComplete,
+		raindrops,
+		selectedCollectionId,
+	]);
+
+	const tagSuggestions = useMemo(() => {
+		if (searchMode.kind !== "tags") return [];
+
+		const query = normalize(searchMode.query);
+		const selectedTag = normalize(selectedTagFilter ?? "");
+		const suggestions = getTagSuggestionsFromRaindrops(
+			tagSourceRaindrops,
+		).filter(({ tag }) => normalize(tag) !== selectedTag);
+
+		if (!query) {
+			return uniqueTagSuggestions(suggestions).slice(0, MAX_TAG_SUGGESTIONS);
+		}
+
+		return uniqueTagSuggestions(
+			suggestions
+				.map((suggestion) => ({
+					...suggestion,
+					score: getTagMatchScore(suggestion.tag, query),
+				}))
+				.filter(({ score }) => score > 0)
+				.sort(
+					(left, right) =>
+						right.score - left.score ||
+						right.count - left.count ||
+						left.tag.localeCompare(right.tag),
+				)
+				.map(({ tag, count }) => ({ tag, count })),
+		).slice(0, MAX_TAG_SUGGESTIONS);
+	}, [searchMode, selectedTagFilter, tagSourceRaindrops]);
+
+	const bookmarkSectionTitle = selectedTagFilter
+		? `${selectedCollectionTitle} · #${selectedTagFilter}`
+		: selectedCollectionTitle;
 
 	const hasMoreRaindrops = raindrops.length < raindropsCount;
 
@@ -543,10 +706,15 @@ export default function RaindropBookmarks({
 	const handleCollectionDropdownChange = useCallback(
 		(collectionId: string) => {
 			if (collectionId !== selectedCollectionId) {
-				push(<RaindropBookmarks initialCollectionId={collectionId} />);
+				push(
+					<RaindropBookmarks
+						initialCollectionId={collectionId}
+						initialTagFilter={selectedTagFilter}
+					/>,
+				);
 			}
 		},
-		[push, selectedCollectionId],
+		[push, selectedCollectionId, selectedTagFilter],
 	);
 
 	const renameBookmark = useCallback(
@@ -731,13 +899,14 @@ export default function RaindropBookmarks({
 	const shouldShowEmptyView =
 		!isLoadingRaindrops &&
 		collectionSuggestions.length === 0 &&
+		tagSuggestions.length === 0 &&
 		raindrops.length === 0;
 
 	return (
 		<List
 			isLoading={isLoadingRaindrops}
 			onSearchTextChange={setSearchText}
-			searchBarPlaceholder={`Search in ${selectedCollectionTitle} or type a collection name...`}
+			searchBarPlaceholder={`Search in ${selectedCollectionTitle}; use # for tags or / for collections...`}
 			filtering={false}
 			searchBarAccessory={
 				<CollectionDropdown
@@ -754,12 +923,25 @@ export default function RaindropBookmarks({
 			<CollectionSuggestionsSection
 				collections={collectionSuggestions}
 				renderTarget={(collectionId) => (
-					<RaindropBookmarks initialCollectionId={collectionId} />
+					<RaindropBookmarks
+						initialCollectionId={collectionId}
+						initialTagFilter={selectedTagFilter}
+					/>
+				)}
+			/>
+
+			<TagSuggestionsSection
+				tags={tagSuggestions}
+				renderTarget={(tag) => (
+					<RaindropBookmarks
+						initialCollectionId={selectedCollectionId}
+						initialTagFilter={tag}
+					/>
 				)}
 			/>
 
 			<BookmarkListSection
-				title={selectedCollectionTitle}
+				title={bookmarkSectionTitle}
 				raindrops={raindrops}
 				totalCount={raindropsCount}
 				hasMore={hasMoreRaindrops}
@@ -778,6 +960,7 @@ export default function RaindropBookmarks({
 				renderAllBookmarksTarget={() => (
 					<RaindropBookmarks
 						initialCollectionId={ALL_BOOKMARKS_COLLECTION_ID.toString()}
+						initialTagFilter={selectedTagFilter}
 					/>
 				)}
 			/>

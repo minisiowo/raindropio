@@ -19,6 +19,13 @@
       "subtitle": "Search your bookmarks",
       "description": "Search your Raindrop.io bookmarks.",
       "mode": "view"
+    },
+    {
+      "name": "quick-add-bookmark",
+      "title": "Quick Add Bookmark",
+      "subtitle": "Raindrop.io",
+      "description": "Quickly add a bookmark to Raindrop.io.",
+      "mode": "view"
     }
   ],
   "preferences": [
